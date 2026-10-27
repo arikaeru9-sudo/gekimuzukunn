@@ -35,7 +35,7 @@ const TANK_COUNTS = [2, 4, 10];
 
 // 戦車のパラメータ
 const TANK_HP = 260;
-const TANK_SPEED = 74;
+const TANK_SPEED = 111;
 const TANK_RANGE = 280;
 const TANK_DAMAGE = 45;
 const TANK_RELOAD = 1.6;
@@ -315,7 +315,7 @@ function makePlayer() {
 function makePlayerTank() {
   return {
     kind: 'player', isTank: true, x: SPAWN_X, y: SPAWN_Y, r: TANK_PLAYER_R,
-    hp: 340, maxhp: 340, speed: 84,
+    hp: 340, maxhp: 340, speed: 111,
     vx: 0, vy: 0,
     aim: 0, hullAng: 0,
     reload: 0, muzzle: 0, trackPhase: 0,
