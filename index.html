@@ -20,15 +20,67 @@
 const TAU = Math.PI * 2;
 
 // ============================================================
-//  難易度（弾幕量 3段階）
+//  難易度
 // ============================================================
 const DIFFICULTY = [
   { key:'EASY',    label:'弾幕 少なめ', note:'のんびりいこう',      mult:0.62, color:'#7cf5c4' },
   { key:'NORMAL',  label:'弾幕 普通',   note:'標準的な地獄',        mult:1.00, color:'#ffd24a' },
-  { key:'LUNATIC', label:'弾幕 激ムズ', note:'※ブチギレても責任は終えません', mult:1.65, color:'#ff4a6e' }
+  { key:'LUNATIC', label:'弾幕 激ムズ', note:'※ ブチギレても責任は負いません', mult:1.65, color:'#ff4a6e' }
 ];
 let diffIndex = 1;
 const dmult = () => DIFFICULTY[diffIndex].mult;
+
+// 戦車の数（難易度別）
+const TANK_COUNTS = [2, 4, 10];
+
+// 戦車のパラメータ
+const TANK_HP = 260;
+const TANK_SPEED = 74;
+const TANK_RANGE = 280;
+const TANK_DAMAGE = 45;
+const TANK_RELOAD = 1.6;
+const TANK_SHELL_SPEED = 420;
+const TANK_SHELL_RADIUS = 6;
+const TANK_SHELL_LIFE = TANK_RANGE / TANK_SHELL_SPEED;
+const TANK_ALLY_R = 16;
+const TANK_PLAYER_R = 18;
+
+// ============================================================
+//  戦車の配色（原色の光）
+// ============================================================
+// 味方戦車：青い光のエネルギー体
+const ALLY_TANK_COLORS = {
+  glow:       'rgba(40,130,255,0.34)',
+  hullFill:   'rgba(40,110,230,0.20)',
+  hullLine:   '#5fb0ff',
+  hullInner:  'rgba(170,225,255,0.60)',
+  trackGlow:  'rgba(40,120,255,0.30)',
+  trackLine:  '#8fd8ff',
+  dash:       'rgba(225,248,255,0.95)',
+  turretFill: 'rgba(60,140,255,0.30)',
+  turretLine: '#a9e4ff',
+  barrel:     '#cdeeff',
+  barrelGlow: 'rgba(70,160,255,0.50)',
+  hatch:      '#eefaff',
+  hpRing:     '#7fd0ff'
+};
+
+// プレイヤー戦車：黄色い光のエネルギー体
+const PLAYER_TANK_COLORS = {
+  glow:       'rgba(255,205,30,0.36)',
+  hullFill:   'rgba(235,180,0,0.20)',
+  hullLine:   '#ffd83a',
+  hullInner:  'rgba(255,248,190,0.65)',
+  trackGlow:  'rgba(255,190,0,0.30)',
+  trackLine:  '#ffe98f',
+  dash:       'rgba(255,255,225,0.95)',
+  turretFill: 'rgba(255,200,20,0.32)',
+  turretLine: '#fff2a8',
+  barrel:     '#fff8cc',
+  barrelGlow: 'rgba(255,200,40,0.55)',
+  hatch:      '#ffffff',
+  hpRing:     '#ffd83a'
+};
 
 // ============================================================
 //  画面サイズ / フルスクリーン / ズーム
@@ -85,8 +137,8 @@ const ALLY_CAP = 120;
 const DODGER_RATIO = 0.35;
 const IFRAME = 0.30;
 
-const LASER_LEN = 3000;      // 描画用（実際はビューでクリップ）
-const BULLET_CAP = 1800;     // 安全弁
+const LASER_LEN = 3000;
+const BULLET_CAP = 1800;
 
 // ============================================================
 //  入力
@@ -157,6 +209,10 @@ const rand = (a, b) => a + Math.random() * (b - a);
 const dist2 = (a, b) => { const dx = a.x - b.x, dy = a.y - b.y; return dx*dx + dy*dy; };
 const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
+function lerpAngle(a, b, t) {
+  return a + angDiff(b, a) * Math.min(1, t);
+}
+
 function camViewW() { return VIEW_W / ZOOM; }
 function camViewH() { return VIEW_H / ZOOM; }
 
@@ -170,7 +226,6 @@ function clampCamera() {
   G.cam.y = clampCam(G.cam.y, camViewH(), WORLD_H);
 }
 
-// 直線（点o + t*d）と矩形の交差区間を返す。交差しなければ null
 function clipLineToRect(ox, oy, dx, dy, x0, y0, x1, y1, maxT) {
   let tMin = -maxT, tMax = maxT;
 
@@ -249,11 +304,22 @@ let G = null;
 
 function makePlayer() {
   return {
-    kind: 'player', x: SPAWN_X, y: SPAWN_Y, r: 12,
+    kind: 'player', isTank: false, x: SPAWN_X, y: SPAWN_Y, r: 12,
     hp: 100, maxhp: 100, speed: 132,
     vx: 0, vy: 0,
     aim: 0, atkCd: 0, swing: 0, swingAng: 0,
     invuln: 1.2, flash: 0
+  };
+}
+
+function makePlayerTank() {
+  return {
+    kind: 'player', isTank: true, x: SPAWN_X, y: SPAWN_Y, r: TANK_PLAYER_R,
+    hp: 340, maxhp: 340, speed: 84,
+    vx: 0, vy: 0,
+    aim: 0, hullAng: 0,
+    reload: 0, muzzle: 0, trackPhase: 0,
+    invuln: 1.2, flash: 0, noTargetTimer: 0
   };
 }
 
@@ -270,9 +336,20 @@ function makeAlly() {
   };
 }
 
+function makeTankAlly() {
+  return {
+    kind: 'tank', x: SPAWN_X, y: SPAWN_Y, r: TANK_ALLY_R,
+    hp: TANK_HP, maxhp: TANK_HP, speed: TANK_SPEED,
+    vx: 0, vy: 0,
+    aim: 0, hullAng: 0,
+    reload: rand(0, 1.0), muzzle: 0, trackPhase: rand(0, 10),
+    invuln: rand(0, 0.4), flash: 0
+  };
+}
+
 function reset() {
   G = {
-    state: 'menu',          // 'menu' | 'playing'
+    state: 'menu',
     t: 0,
     allyDeaths: 0,
     playerDeaths: 0,
@@ -287,6 +364,7 @@ function reset() {
     waveBanner: 0,
 
     bullets: [],
+    shells: [],
     orbs: [],
     warnings: [],
     lasers: [],
@@ -325,6 +403,7 @@ function startGame() {
   G.waveInterval = 8.0;
   G.waveTimer = 8.0;
   spawnWave(Math.round(25 * Math.max(1, dmult())));
+  spawnTanksToCap();
   last = performance.now();
 }
 
@@ -394,7 +473,6 @@ function getDodgeVector(a) {
     }
   }
 
-  // レーザー回避（任意角度）
   for (const L of G.lasers) {
     if (L.phase !== 'warn') continue;
     const ex = a.x - L.ox, ey = a.y - L.oy;
@@ -463,6 +541,44 @@ function meleeSweep(attacker, angle, range, halfArc, dmg) {
 }
 
 // ============================================================
+//  戦車の砲弾（光弾）
+// ============================================================
+function fireTankShell(tank) {
+  const ang = tank.aim;
+  const mx = tank.x + Math.cos(ang) * 34;
+  const my = tank.y + Math.sin(ang) * 34;
+  G.shells.push({
+    x: mx, y: my,
+    vx: Math.cos(ang) * TANK_SHELL_SPEED,
+    vy: Math.sin(ang) * TANK_SHELL_SPEED,
+    r: TANK_SHELL_RADIUS, dmg: TANK_DAMAGE, life: TANK_SHELL_LIFE, dead: false
+  });
+  burst(mx, my, 6, '#fff6b0', 220);
+}
+
+function updateShells(dt) {
+  const enemies = enemiesAlive();
+  for (const s of G.shells) {
+    if (s.dead) continue;
+    s.x += s.vx * dt;
+    s.y += s.vy * dt;
+    s.life -= dt;
+    if (s.life <= 0) { s.dead = true; continue; }
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      if (dist2(s, e) < (s.r + e.r) * (s.r + e.r)) {
+        hurtEnemy(e, s.dmg);
+        burst(s.x, s.y, 12, '#ffe9a0', 250);
+        shake(3);
+        s.dead = true;
+        break;
+      }
+    }
+  }
+  G.shells = G.shells.filter(s => !s.dead);
+}
+
+// ============================================================
 //  パーティクル / シェイク
 // ============================================================
 let shakeAmt = 0, shakeT = 0;
@@ -483,7 +599,7 @@ function burst(x, y, n, color, spd) {
 // ============================================================
 function spawnWave(n) {
   let alive = 0;
-  for (const a of G.allies) if (a.hp > 0) alive++;
+  for (const a of G.allies) if (a.hp > 0 && a.kind !== 'tank') alive++;
   const canSpawn = Math.max(0, Math.min(n, ALLY_CAP - alive));
   for (let i = 0; i < canSpawn; i++) {
     const a = makeAlly();
@@ -492,12 +608,27 @@ function spawnWave(n) {
     G.allies.push(a);
   }
 }
+
+function spawnTanksToCap() {
+  const cap = TANK_COUNTS[diffIndex];
+  let alive = 0;
+  for (const a of G.allies) if (a.kind === 'tank' && a.hp > 0) alive++;
+  const need = Math.max(0, cap - alive);
+  for (let i = 0; i < need; i++) {
+    const t = makeTankAlly();
+    t.x = clamp(SPAWN_X + rand(-80, 80), 20, WORLD_W - 20);
+    t.y = clamp(SPAWN_Y + rand(-400, 400), 20, WORLD_H - 20);
+    G.allies.push(t);
+  }
+}
+
 function updateWaves(dt) {
   G.waveTimer -= dt;
   if (G.waveTimer <= 0) {
     G.wave++;
     const n = Math.round((14 + G.wave * 4) * Math.max(1, dmult()));
     spawnWave(n);
+    spawnTanksToCap();
     G.waveBanner = 2.5;
     G.waveInterval = Math.max(5.5, 10.0 - G.wave * 0.25);
     G.waveTimer = G.waveInterval;
@@ -567,9 +698,6 @@ function fireAimed(c) {
   }
 }
 
-// ------------------------------------------------------------
-//  レーザー：最も密集している方向をぶち抜く
-// ------------------------------------------------------------
 function densestDirection(c, list) {
   if (!list || list.length === 0) return Math.random() * TAU;
 
@@ -606,12 +734,9 @@ function fireLasers(c) {
   const main = densestDirection(c, list);
   const m = dmult();
 
-  // 主軸：最密集方向を貫通
   pushLaser(c.x, c.y, main, 1.05, 26);
-  // 直交軸
   pushLaser(c.x, c.y, main + Math.PI / 2, 1.35, 26);
 
-  // 激ムズでは平行ビームを追加
   if (m > 1.2) {
     const nx = -Math.sin(main), ny = Math.cos(main);
     const off = 150;
@@ -737,14 +862,15 @@ function updateTurrets(dt) {
 function updatePlayer(dt) {
   if (!G.player) {
     G.playerRespawn -= dt;
-    if (G.playerRespawn <= 0) G.player = makePlayer();
+    if (G.playerRespawn <= 0) {
+      if (Math.random() < 0.45) G.player = makePlayerTank();
+      else G.player = makePlayer();
+    }
     return;
   }
   const p = G.player;
   p.invuln = Math.max(0, p.invuln - dt);
   p.flash = Math.max(0, p.flash - dt);
-  p.atkCd = Math.max(0, p.atkCd - dt);
-  p.swing = Math.max(0, p.swing - dt);
 
   let dx = 0, dy = 0;
   if (keys.KeyA || keys.ArrowLeft) dx--;
@@ -769,12 +895,112 @@ function updatePlayer(dt) {
   const wmy = myv / ZOOM + G.cam.y;
   p.aim = Math.atan2(wmy - p.y, wmx - p.x);
 
-  if ((mouseDown || keys.Space) && p.atkCd <= 0) {
-    p.atkCd = 0.33;
-    p.swing = 0.16;
-    p.swingAng = p.aim;
-    meleeSweep(p, p.aim, 78, 1.05, 24);
+  if (p.isTank) {
+    if (p.vx || p.vy) {
+      const moveAng = Math.atan2(p.vy, p.vx);
+      p.hullAng = lerpAngle(p.hullAng, moveAng, dt * 8);
+    }
+    p.trackPhase += Math.hypot(p.vx, p.vy) * dt * 0.12;
+    p.reload = Math.max(0, p.reload - dt);
+    p.muzzle = Math.max(0, p.muzzle - dt);
+    p.noTargetTimer = Math.max(0, p.noTargetTimer - dt);
+
+    if ((mouseDown || keys.Space) && p.reload <= 0) {
+      const enemies = enemiesAlive();
+      let canFire = false;
+      for (const e of enemies) {
+        if (e.hp <= 0) continue;
+        const d = Math.hypot(e.x - p.x, e.y - p.y);
+        if (d > TANK_RANGE + e.r) continue;
+        const angTo = Math.atan2(e.y - p.y, e.x - p.x);
+        if (Math.abs(angDiff(angTo, p.aim)) > 0.8) continue;
+        canFire = true; break;
+      }
+      if (canFire) {
+        p.reload = TANK_RELOAD;
+        p.muzzle = 0.12;
+        fireTankShell(p);
+        shake(2);
+        p.noTargetTimer = 0;
+      } else {
+        p.noTargetTimer = 0.6;
+      }
+    }
+  } else {
+    p.atkCd = Math.max(0, p.atkCd - dt);
+    p.swing = Math.max(0, p.swing - dt);
+    if ((mouseDown || keys.Space) && p.atkCd <= 0) {
+      p.atkCd = 0.33;
+      p.swing = 0.16;
+      p.swingAng = p.aim;
+      meleeSweep(p, p.aim, 78, 1.05, 24);
+    }
   }
+}
+
+function updateTankAI(a, dt, enemies, all) {
+  a.invuln = Math.max(0, a.invuln - dt);
+  a.flash = Math.max(0, a.flash - dt);
+  a.reload = Math.max(0, a.reload - dt);
+  a.muzzle = Math.max(0, a.muzzle - dt);
+
+  let target = null, bd = Infinity;
+  for (const e of enemies) {
+    if (e.hp <= 0) continue;
+    const dd = dist2(a, e);
+    if (dd < bd) { bd = dd; target = e; }
+  }
+  if (!target) { a.vx = 0; a.vy = 0; return; }
+
+  const distCenter = Math.sqrt(bd);
+
+  let mx = 0, my = 0;
+  if (distCenter > TANK_RANGE * 0.85) {
+    const ang = Math.atan2(target.y - a.y, target.x - a.x);
+    mx = Math.cos(ang);
+    my = Math.sin(ang);
+  }
+
+  let sepX = 0, sepY = 0;
+  for (const o of all) {
+    if (o === a || o.hp <= 0) continue;
+    const ex = a.x - o.x, ey = a.y - o.y;
+    const ed2 = ex*ex + ey*ey;
+    const minD = a.r + o.r + 6;
+    if (ed2 < minD * minD && ed2 > 0.01) {
+      const ed = Math.sqrt(ed2);
+      const push = (minD - ed) / minD;
+      sepX += (ex / ed) * push;
+      sepY += (ey / ed) * push;
+    }
+  }
+  mx += sepX * 1.2;
+  my += sepY * 1.2;
+
+  const m = Math.hypot(mx, my);
+  if (m > 0.01) {
+    a.vx = mx / m * a.speed;
+    a.vy = my / m * a.speed;
+    a.x += a.vx * dt;
+    a.y += a.vy * dt;
+  } else { a.vx = 0; a.vy = 0; }
+
+  if (a.vx || a.vy) {
+    a.hullAng = lerpAngle(a.hullAng, Math.atan2(a.vy, a.vx), dt * 8);
+  }
+
+  a.aim = Math.atan2(target.y - a.y, target.x - a.x);
+  a.trackPhase += Math.hypot(a.vx, a.vy) * dt * 0.12;
+
+  if (distCenter <= TANK_RANGE && a.reload <= 0) {
+    a.reload = TANK_RELOAD;
+    a.muzzle = 0.12;
+    fireTankShell(a);
+    shake(1.5);
+  }
+
+  a.x = clamp(a.x, a.r, WORLD_W - a.r);
+  a.y = clamp(a.y, a.r, WORLD_H - a.r);
 }
 
 function updateAllies(dt) {
@@ -784,6 +1010,11 @@ function updateAllies(dt) {
   for (let i = 0; i < all.length; i++) {
     const a = all[i];
     if (a.hp <= 0) continue;
+
+    if (a.kind === 'tank') {
+      updateTankAI(a, dt, enemies, all);
+      continue;
+    }
 
     a.invuln = Math.max(0, a.invuln - dt);
     a.flash = Math.max(0, a.flash - dt);
@@ -953,7 +1184,6 @@ function updateBullets(dt) {
   }
   G.bullets = G.bullets.filter(b => !b.dead);
 
-  // 安全弁：弾が増えすぎたら古いものから間引く
   if (G.bullets.length > BULLET_CAP) {
     G.bullets.splice(0, G.bullets.length - BULLET_CAP);
   }
@@ -1053,6 +1283,7 @@ function update(dt) {
   updateTurrets(dt);
   updateCoreAI(dt);
   updateBullets(dt);
+  updateShells(dt);
   updateOrbs(dt);
   updateWarnings(dt);
   updateLasers(dt);
@@ -1091,6 +1322,7 @@ function draw() {
   drawCore();
   drawOrbs();
   drawBullets();
+  drawShells();
   drawAllies();
   drawPlayer();
   drawParticles();
@@ -1160,7 +1392,7 @@ function drawMenu() {
 
   ctx.font = '14px system-ui';
   ctx.fillStyle = '#7cf5c4';
-  ctx.fillText('行きたい地獄を選んでね！', W / 2, H * 0.20 + 74);
+  ctx.fillText('好きな地獄を選んでね！', W / 2, H * 0.20 + 74);
 
   const btns = menuButtons();
   for (let i = 0; i < 3; i++) {
@@ -1361,7 +1593,6 @@ function drawCore() {
   ctx.fillRect(c.x - w/2, c.y - c.r - 15, w * (c.hp / c.maxhp), 4);
 }
 
-// 弾は「トレーサー → グロー → 本体 → 白コア」のパスに分けて一括描画（状態変更を削減）
 function drawBullets() {
   if (G.bullets.length === 0) return;
 
@@ -1369,7 +1600,6 @@ function drawBullets() {
   const vx1 = G.cam.x + camViewW() + 40;
   const vy1 = G.cam.y + camViewH() + 40;
 
-  // トレーサー
   ctx.lineCap = 'round';
   ctx.globalAlpha = 0.55;
   for (const b of G.bullets) {
@@ -1387,7 +1617,6 @@ function drawBullets() {
   }
   ctx.globalAlpha = 1;
 
-  // グロー
   ctx.globalAlpha = 0.30;
   for (const b of G.bullets) {
     if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
@@ -1396,14 +1625,12 @@ function drawBullets() {
   }
   ctx.globalAlpha = 1;
 
-  // 本体
   for (const b of G.bullets) {
     if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     ctx.fillStyle = b.color;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
   }
 
-  // 白コア
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
   for (const b of G.bullets) {
     if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
@@ -1411,6 +1638,29 @@ function drawBullets() {
   }
 
   ctx.lineCap = 'butt';
+}
+
+function drawShells() {
+  for (const s of G.shells) {
+    const sp = Math.hypot(s.vx, s.vy);
+    if (sp > 1) {
+      const nx = s.vx / sp, ny = s.vy / sp;
+      ctx.strokeStyle = 'rgba(255,220,120,0.35)';
+      ctx.lineWidth = s.r * 1.6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x - nx * 22, s.y - ny * 22);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
+    ctx.fillStyle = 'rgba(255,225,130,0.30)';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 2.4, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffe28a';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 0.45, 0, TAU); ctx.fill();
+  }
 }
 
 function drawOrbs() {
@@ -1454,11 +1704,6 @@ function drawWarnings() {
   }
 }
 
-// ------------------------------------------------------------
-//  レーザー描画（軽量版）
-//   ・shadowBlur を使わない
-//   ・ビュー矩形と交差する区間だけを描く
-// ------------------------------------------------------------
 function drawLasers() {
   if (G.lasers.length === 0) return;
 
@@ -1500,22 +1745,18 @@ function drawLasers() {
 
       ctx.lineCap = 'round';
 
-      // 外側グロー
       ctx.strokeStyle = 'rgba(255,90,200,0.14)';
       ctx.lineWidth = w * 2.6;
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
 
-      // 中間グロー
       ctx.strokeStyle = 'rgba(255,110,210,0.30)';
       ctx.lineWidth = w * 1.6;
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
 
-      // 本体
       ctx.strokeStyle = 'rgba(255,130,220,0.88)';
       ctx.lineWidth = w;
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
 
-      // 白コア
       ctx.strokeStyle = 'rgba(255,255,255,0.95)';
       ctx.lineWidth = Math.max(1.5, w * 0.32);
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
@@ -1525,9 +1766,189 @@ function drawLasers() {
   }
 }
 
+// ------------------------------------------------------------
+//  戦車の描画（原色の光のエネルギー体）
+// ------------------------------------------------------------
+function drawTank(t, C, isPlayer) {
+  const hullL = 46, hullW = 28;
+  const trackW = 9, trackL = hullL + 4;
+  const trackOffsetY = hullW / 2 + trackW / 2 - 1;
+
+  const pulse = 0.72 + 0.28 * Math.sin(G.t * 7 + (t.x + t.y) * 0.01);
+
+  // ---- 外周のオーラ ----
+  const auraR = 54;
+  const ag = ctx.createRadialGradient(t.x, t.y, 4, t.x, t.y, auraR);
+  ag.addColorStop(0, C.glow);
+  ag.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalAlpha = 0.55 + 0.45 * pulse;
+  ctx.fillStyle = ag;
+  ctx.beginPath(); ctx.arc(t.x, t.y, auraR, 0, TAU); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  ctx.save();
+  ctx.translate(t.x, t.y);
+
+  // ===== 車体 =====
+  ctx.save();
+  ctx.rotate(t.hullAng);
+
+  // 履帯：光の帯
+  ctx.lineCap = 'round';
+  for (const side of [-1, 1]) {
+    const ty = side * trackOffsetY;
+
+    // 発光
+    ctx.strokeStyle = C.trackGlow;
+    ctx.lineWidth = trackW * 2.1;
+    ctx.beginPath(); ctx.moveTo(-trackL/2, ty); ctx.lineTo(trackL/2, ty); ctx.stroke();
+
+    // 芯
+    ctx.strokeStyle = C.trackLine;
+    ctx.lineWidth = trackW * 0.65;
+    ctx.beginPath(); ctx.moveTo(-trackL/2, ty); ctx.lineTo(trackL/2, ty); ctx.stroke();
+
+    // 流れる光のセグメント
+    ctx.setLineDash([4, 8]);
+    ctx.lineDashOffset = -t.trackPhase * 6;
+    ctx.strokeStyle = C.dash;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(-trackL/2, ty); ctx.lineTo(trackL/2, ty); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+  }
+  ctx.lineCap = 'butt';
+
+  // 車体：半透明の発光体
+  ctx.fillStyle = C.hullFill;
+  roundRectPath(ctx, -hullL/2, -hullW/2, hullL, hullW, 6);
+  ctx.fill();
+
+  ctx.strokeStyle = C.hullLine;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 内側の光のライン
+  ctx.strokeStyle = C.hullInner;
+  ctx.lineWidth = 1.2;
+  roundRectPath(ctx, -hullL/2 + 4, -hullW/2 + 4, hullL - 8, hullW - 8, 4);
+  ctx.stroke();
+
+  // 前面装甲の発光ライン
+  ctx.strokeStyle = C.hullInner;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(hullL/2 - 9, -hullW/2 + 5);
+  ctx.lineTo(hullL/2 - 9, hullW/2 - 5);
+  ctx.stroke();
+
+  // 側面のエネルギーライン
+  ctx.strokeStyle = C.hullInner;
+  ctx.lineWidth = 1;
+  ctx.globalAlpha = pulse;
+  ctx.beginPath();
+  ctx.moveTo(-hullL/2 + 8, 0);
+  ctx.lineTo(hullL/2 - 12, 0);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.restore(); // 車体回転
+
+  // ===== 砲塔 =====
+  ctx.save();
+  ctx.rotate(t.aim);
+
+  // 砲身：光のビーム
+  const barrelLen = 34;
+  const bx0 = 6, bx1 = 6 + barrelLen;
+
+  ctx.lineCap = 'round';
+  // 外側グロー
+  ctx.strokeStyle = C.barrelGlow;
+  ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(bx0, 0); ctx.lineTo(bx1, 0); ctx.stroke();
+  // 芯の光
+  ctx.strokeStyle = C.barrel;
+  ctx.lineWidth = 3.2;
+  ctx.beginPath(); ctx.moveTo(bx0, 0); ctx.lineTo(bx1, 0); ctx.stroke();
+  ctx.lineCap = 'butt';
+
+  // マズルリング
+  ctx.strokeStyle = C.barrel;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(bx1 - 4, 0, 5.5, 0, TAU); ctx.stroke();
+
+  // 砲塔基部：光の球
+  const tg = ctx.createRadialGradient(0, 0, 1, 0, 0, 15);
+  tg.addColorStop(0, C.hatch);
+  tg.addColorStop(0.40, C.turretFill);
+  tg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = tg;
+  ctx.beginPath(); ctx.arc(0, 0, 15, 0, TAU); ctx.fill();
+
+  ctx.strokeStyle = C.turretLine;
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, 10, 0, TAU); ctx.stroke();
+
+  // ハッチの光点
+  ctx.fillStyle = C.hatch;
+  ctx.beginPath(); ctx.arc(-1.5, 0, 2.4 * pulse, 0, TAU); ctx.fill();
+
+  // 発射光
+  if (t.muzzle > 0) {
+    const k = t.muzzle / 0.12;
+    const mx = bx1 + 6;
+
+    const mg = ctx.createRadialGradient(mx, 0, 1, mx, 0, 24 * k);
+    mg.addColorStop(0, 'rgba(255,255,255,' + (0.95 * k) + ')');
+    mg.addColorStop(0.35, 'rgba(255,238,160,' + (0.7 * k) + ')');
+    mg.addColorStop(1, 'rgba(255,190,70,0)');
+    ctx.fillStyle = mg;
+    ctx.beginPath(); ctx.arc(mx, 0, 24 * k, 0, TAU); ctx.fill();
+
+    // 十字の光条
+    ctx.strokeStyle = 'rgba(255,255,225,' + (0.9 * k) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mx - 14 * k, 0); ctx.lineTo(mx + 14 * k, 0);
+    ctx.moveTo(mx, -14 * k);    ctx.lineTo(mx, 14 * k);
+    ctx.stroke();
+  }
+
+  ctx.restore(); // 砲塔回転
+
+  // 被弾フラッシュ
+  if (t.flash > 0) {
+    ctx.globalAlpha = Math.min(0.9, t.flash * 5.5);
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(0, 0, 24, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // プレイヤーのHPリング
+  if (isPlayer) {
+    ctx.strokeStyle = C.hpRing;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 28, -Math.PI / 2, -Math.PI / 2 + TAU * (t.hp / t.maxhp));
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ------------------------------------------------------------
+//  味方の描画
+// ------------------------------------------------------------
 function drawAllies() {
   for (const a of G.allies) {
     if (a.hp <= 0) continue;
+
+    if (a.kind === 'tank') {
+      drawTank(a, ALLY_TANK_COLORS, false);
+      continue;
+    }
+
     if (a.swing > 0) {
       const k = a.swing / 0.14;
       ctx.strokeStyle = `rgba(150,255,220,${0.7 * k})`;
@@ -1556,6 +1977,24 @@ function drawPlayer() {
     ctx.strokeStyle = `rgba(120,220,255,${0.3 + 0.4 * k})`;
     ctx.lineWidth = 3;
     ctx.beginPath(); ctx.arc(SPAWN_X, SPAWN_Y, 24 * k + 8, 0, TAU); ctx.stroke();
+    return;
+  }
+
+  if (p.isTank) {
+    // 射程サークル
+    ctx.strokeStyle = 'rgba(255,216,58,0.14)';
+    ctx.setLineDash([6, 8]);
+    ctx.beginPath(); ctx.arc(p.x, p.y, TANK_RANGE, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+
+    drawTank(p, PLAYER_TANK_COLORS, true);
+
+    if (p.noTargetTimer > 0) {
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 11px system-ui';
+      ctx.fillStyle = `rgba(255,140,140,${Math.min(1, p.noTargetTimer * 2)})`;
+      ctx.fillText('OUT OF RANGE', p.x, p.y - 44);
+    }
     return;
   }
 
@@ -1707,14 +2146,20 @@ function drawPanel() {
   ctx.fillText(String(G.allyDeaths), px + pad, y);
   y += 18;
 
-  let dodgers = 0;
-  for (const a of G.allies) if (a.dodger) dodgers++;
+  let dodgers = 0, tanks = 0;
+  for (const a of G.allies) {
+    if (a.hp <= 0) continue;
+    if (a.dodger) dodgers++;
+    if (a.kind === 'tank') tanks++;
+  }
 
   ctx.font = '12px system-ui';
   ctx.fillStyle = '#9ab';
   ctx.fillText('生存味方  ' + G.allies.length + ' / ' + ALLY_CAP, px + pad, y); y += 18;
   ctx.fillStyle = '#d6ff9a';
   ctx.fillText('回避型BOT  ' + dodgers, px + pad, y); y += 18;
+  ctx.fillStyle = '#5fb0ff';
+  ctx.fillText('戦車(青)  ' + tanks + ' / ' + TANK_COUNTS[diffIndex], px + pad, y); y += 18;
   ctx.fillStyle = '#9ab';
   ctx.fillText('自機戦死  ' + G.playerDeaths + ' 回', px + pad, y); y += 18;
   ctx.fillText('経過  ' + G.t.toFixed(1) + ' 秒', px + pad, y); y += 22;
@@ -1751,7 +2196,7 @@ function drawPanel() {
   ctx.font = '11px system-ui';
   ctx.fillStyle = 'rgba(150,170,190,0.55)';
   ctx.fillText('WASD / 矢印      移動', px + pad, H - 62);
-  ctx.fillText('左クリック / Space  近接', px + pad, H - 44);
+  ctx.fillText('左クリック / Space  攻撃', px + pad, H - 44);
   ctx.fillStyle = 'rgba(150,220,255,0.75)';
   ctx.fillText('F  フルスクリーン切替', px + pad, H - 26);
 
@@ -1786,8 +2231,13 @@ function drawMinimap(mx, my, mw, mh) {
 
   for (const a of G.allies) {
     if (a.hp <= 0) continue;
-    ctx.fillStyle = a.dodger ? '#d6ff9a' : '#3fd6a6';
-    ctx.fillRect(mx + a.x * sx - 1, my + a.y * sy - 1, 2, 2);
+    if (a.kind === 'tank') {
+      ctx.fillStyle = '#5fb0ff';
+      ctx.fillRect(mx + a.x * sx - 2, my + a.y * sy - 2, 4, 4);
+    } else {
+      ctx.fillStyle = a.dodger ? '#d6ff9a' : '#3fd6a6';
+      ctx.fillRect(mx + a.x * sx - 1, my + a.y * sy - 1, 2, 2);
+    }
   }
 
   for (const t of G.turrets) {
@@ -1806,7 +2256,7 @@ function drawMinimap(mx, my, mw, mh) {
   }
 
   if (G.player) {
-    ctx.fillStyle = '#4fd8ff';
+    ctx.fillStyle = G.player.isTank ? '#ffd83a' : '#4fd8ff';
     ctx.beginPath();
     ctx.arc(mx + G.player.x * sx, my + G.player.y * sy, 3, 0, TAU);
     ctx.fill();
